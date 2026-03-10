@@ -1,0 +1,41 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build Android debug APK",
+			"type": "shell",
+			"command": ".\\gradlew.bat",
+			"args": [
+				"assembleDebug"
+			],
+			"isBackground": false,
+			"options": {
+				"cwd": "${workspaceFolder}/android",
+				"env": {
+					"JAVA_HOME": "C:\\Program Files\\Android\\Android Studio\\jbr",
+					"Path": "C:\\Program Files\\Android\\Android Studio\\jbr\\bin;${env:Path}"
+				}
+			},
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Build Android debug APK from android",
+			"type": "shell",
+			"command": ".\\gradlew.bat",
+			"args": [
+				"assembleDebug"
+			],
+			"isBackground": false,
+			"options": {
+				"cwd": "${workspaceFolder}/android",
+				"env": {
+					"JAVA_HOME": "C:\\Program Files\\Android\\Android Studio\\jbr",
+					"Path": "C:\\Program Files\\Android\\Android Studio\\jbr\\bin;${env:Path}"
+				}
+			},
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}

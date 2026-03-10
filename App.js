@@ -24,10 +24,14 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { NestableDraggableFlatList, NestableScrollContainer, ScaleDecorator } from 'react-native-draggable-flatlist';
 import { WebView } from 'react-native-webview';
 
 const STORAGE_KEY = 'todo-items-v1';
 const SETTINGS_KEY = 'todo-settings-v1';
+const WEEK_SCHEDULE_KEY = 'week-schedule-v1';
+const WEEK_CATEGORIES_KEY = 'week-categories-v1';
 const NOTIFICATION_CHANNEL_ID = 'todo-reminders';
 const PENDING_SUMMARY_NOTIFICATION_KIND = 'pending-summary';
 const PENDING_SUMMARY_TIMES = [
@@ -129,6 +133,36 @@ const FILTERS = [
   { key: 'active', label: 'Pendientes' },
   { key: 'overdue', label: 'No completadas' },
   { key: 'done', label: 'Completadas' },
+  { key: 'week', label: 'Semana' },
+];
+
+const WEEK_DAYS = [
+  { key: 'monday', label: 'Lunes' },
+  { key: 'tuesday', label: 'Martes' },
+  { key: 'wednesday', label: 'Miercoles' },
+  { key: 'thursday', label: 'Jueves' },
+  { key: 'friday', label: 'Viernes' },
+  { key: 'saturday', label: 'Sabado' },
+  { key: 'sunday', label: 'Domingo' },
+];
+
+const WEEK_CATEGORIES = [
+  { key: 'study', label: 'Estudio', color: '#2563eb' },
+  { key: 'sports', label: 'Deporte', color: '#16a34a' },
+  { key: 'home', label: 'Casa', color: '#ea580c' },
+  { key: 'personal', label: 'Personal', color: '#7c3aed' },
+  { key: 'other', label: 'Otra', color: '#0f172a' },
+];
+
+const WEEK_CATEGORY_COLOR_OPTIONS = [
+  '#2563eb',
+  '#16a34a',
+  '#ea580c',
+  '#7c3aed',
+  '#db2777',
+  '#0f766e',
+  '#ca8a04',
+  '#0f172a',
 ];
 
 const DEFAULT_MAP_REGION = {
@@ -293,7 +327,6 @@ function buildAmazonMapHtml(region, marker) {
               postMessage('error', { message });
             });
           }
-
           try {
             createMap();
 
@@ -348,6 +381,92 @@ function formatTime(value) {
 
 function formatDateTime(value) {
   return `${formatDate(value)} a las ${formatTime(value)}`;
+}
+
+function hexToRgba(hex, alpha) {
+  const normalized = String(hex).replace('#', '');
+
+  if (normalized.length !== 6) {
+    return `rgba(15, 23, 42, ${alpha})`;
+  }
+
+  const red = parseInt(normalized.slice(0, 2), 16);
+  const green = parseInt(normalized.slice(2, 4), 16);
+  const blue = parseInt(normalized.slice(4, 6), 16);
+
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
+function getCurrentWeekDayKey() {
+  const dayMap = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  return dayMap[new Date().getDay()] ?? 'monday';
+}
+
+function formatScheduleTimeValue(value) {
+  const [hours = '00', minutes = '00'] = String(value ?? '').split(':');
+  return `${hours.padStart(2, '0')}:${minutes.padStart(2, '0')}`;
+}
+
+function compareScheduleItems(firstItem, secondItem) {
+  const firstOrder = typeof firstItem.order === 'number' ? firstItem.order : Number.MAX_SAFE_INTEGER;
+  const secondOrder = typeof secondItem.order === 'number' ? secondItem.order : Number.MAX_SAFE_INTEGER;
+
+  if (firstOrder !== secondOrder) {
+    return firstOrder - secondOrder;
+  }
+
+  const timeComparison = formatScheduleTimeValue(firstItem.time).localeCompare(
+    formatScheduleTimeValue(secondItem.time),
+  );
+
+  if (timeComparison !== 0) {
+    return timeComparison;
+  }
+
+  return firstItem.title.localeCompare(secondItem.title, 'es');
+}
+
+function getWeekCategory(categoryKey, categories = WEEK_CATEGORIES) {
+  return categories.find((category) => category.key === categoryKey) ?? categories[0] ?? WEEK_CATEGORIES[0];
+}
+
+function getWeekdayNotificationValue(dayKey) {
+  const dayMap = {
+    sunday: 1,
+    monday: 2,
+    tuesday: 3,
+    wednesday: 4,
+    thursday: 5,
+    friday: 6,
+    saturday: 7,
+  };
+
+  return dayMap[dayKey] ?? 2;
+}
+
+function parseScheduleTime(value) {
+  const [hours, minutes] = formatScheduleTimeValue(value).split(':').map(Number);
+  return { hours, minutes };
+}
+
+function buildCategoryKey(label) {
+  const normalized = String(label)
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  return normalized || `category-${Date.now()}`;
+}
+
+function getNextScheduleOrder(scheduleItems, dayKey) {
+  const dayOrders = scheduleItems
+    .filter((item) => item.dayKey === dayKey)
+    .map((item) => (typeof item.order === 'number' ? item.order : 0));
+
+  return dayOrders.length ? Math.max(...dayOrders) + 1 : 0;
 }
 
 function isOverdueTodo(todo) {
@@ -635,6 +754,168 @@ const TodoItem = memo(function TodoItem({ item, theme, onToggle, onDelete, onEdi
   );
 });
 
+const ScheduleDayCard = memo(function ScheduleDayCard({ day, items, categories, theme, onEdit, onDelete, onDragEnd, isPhone62 }) {
+  const sortedItems = useMemo(() => [...items].sort(compareScheduleItems), [items]);
+
+  return (
+    <View style={[styles.weekDayCard, isPhone62 && styles.weekDayCardPhone62, { backgroundColor: theme.surface }]}> 
+      <View style={styles.weekDayHeader}>
+        <Text style={[styles.weekDayTitle, isPhone62 && styles.weekDayTitlePhone62, { color: theme.text }]}>
+          {day.label}
+        </Text>
+        <Text style={[styles.weekDayCount, { color: theme.mutedText }]}>
+          {sortedItems.length ? `${sortedItems.length} actividad${sortedItems.length === 1 ? '' : 'es'}` : 'Sin actividades'}
+        </Text>
+      </View>
+
+      {sortedItems.length ? (
+        <NestableDraggableFlatList
+          data={sortedItems}
+          keyExtractor={(item) => item.id}
+          scrollEnabled={false}
+          activationDistance={8}
+          containerStyle={styles.weekEntriesList}
+          onDragEnd={({ data }) => onDragEnd(day.key, data)}
+          renderItem={({ item: scheduleItem, drag, isActive }) => (
+            <ScaleDecorator activeScale={1.02}>
+              <Pressable onLongPress={drag} delayLongPress={140}>
+                <View
+                  style={[
+                    styles.weekEntryRow,
+                    isPhone62 && styles.weekEntryRowPhone62,
+                    {
+                      backgroundColor: isActive ? theme.surface : theme.surfaceAlt,
+                      borderColor: theme.border,
+                      borderLeftColor: getWeekCategory(scheduleItem.categoryKey, categories).color,
+                    },
+                  ]}
+                >
+                  <View style={styles.weekEntryMain}>
+                    <View style={styles.weekEntryTopRow}>
+                      <Text style={[styles.weekEntryTime, isPhone62 && styles.weekEntryTimePhone62, { color: theme.primary }]}>
+                        {formatScheduleTimeValue(scheduleItem.time)}
+                      </Text>
+                      <View
+                        style={[
+                          styles.weekCategoryBadge,
+                          { backgroundColor: hexToRgba(getWeekCategory(scheduleItem.categoryKey, categories).color, 0.14) },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.weekCategoryBadgeText,
+                            { color: getWeekCategory(scheduleItem.categoryKey, categories).color },
+                          ]}
+                        >
+                          {getWeekCategory(scheduleItem.categoryKey, categories).label}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={[styles.weekEntryTitle, isPhone62 && styles.weekEntryTitlePhone62, { color: theme.text }]}>
+                      {scheduleItem.title}
+                    </Text>
+                    <Text style={[styles.weekEntryDragHint, { color: theme.mutedText }]}>Mantén pulsado para mover</Text>
+                    {scheduleItem.reminderEnabled ? (
+                      <Text style={[styles.weekEntryReminder, { color: theme.mutedText }]}>Recordatorio semanal activo</Text>
+                    ) : null}
+                  </View>
+
+                  <View style={styles.weekEntryActions}>
+                    <Pressable
+                      style={[styles.weekEditButton, { backgroundColor: theme.primarySoft }]}
+                      onPress={() => onEdit(scheduleItem)}
+                    >
+                      <Text style={[styles.weekEditButtonText, { color: theme.primaryText }]}>Editar</Text>
+                    </Pressable>
+
+                    <Pressable
+                      style={[styles.weekDeleteButton, { backgroundColor: theme.dangerSoft }]}
+                      onPress={() => onDelete(scheduleItem.id)}
+                    >
+                      <Text style={[styles.weekDeleteButtonText, { color: theme.dangerText }]}>Borrar</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </Pressable>
+            </ScaleDecorator>
+          )}
+        />
+      ) : (
+        <Text style={[styles.weekEmptyDayText, { color: theme.mutedText }]}>
+          Agrega actividades para armar el horario de este dia.
+        </Text>
+      )}
+    </View>
+  );
+});
+
+const WeekCalendarCard = memo(function WeekCalendarCard({ day, categories, theme, isPhone62 }) {
+  const visibleItems = day.items.slice(0, 3);
+
+  return (
+    <View style={[styles.weekCalendarCard, isPhone62 && styles.weekCalendarCardPhone62, { backgroundColor: theme.surface }]}> 
+      <View style={styles.weekCalendarHeader}>
+        <Text style={[styles.weekCalendarTitle, { color: theme.text }]}>{day.label}</Text>
+        <Text style={[styles.weekCalendarCount, { color: theme.mutedText }]}>{day.items.length}</Text>
+      </View>
+
+      {visibleItems.length ? (
+        <View style={styles.weekCalendarEntries}>
+          {visibleItems.map((item) => (
+            <View key={item.id} style={[styles.weekCalendarEntry, { borderLeftColor: getWeekCategory(item.categoryKey, categories).color }]}> 
+              <Text numberOfLines={1} style={[styles.weekCalendarEntryTime, { color: theme.primary }]}>
+                {formatScheduleTimeValue(item.time)}
+              </Text>
+              <Text numberOfLines={1} style={[styles.weekCalendarEntryTitle, { color: theme.text }]}>
+                {item.title}
+              </Text>
+            </View>
+          ))}
+          {day.items.length > 3 ? (
+            <Text style={[styles.weekCalendarMoreText, { color: theme.mutedText }]}>+{day.items.length - 3} mas</Text>
+          ) : null}
+        </View>
+      ) : (
+        <Text style={[styles.weekCalendarEmptyText, { color: theme.mutedText }]}>Sin actividades</Text>
+      )}
+    </View>
+  );
+});
+
+function WeekCategorySelector({ categories, selectedCategoryKey, onSelect, isPhone62 }) {
+  return (
+    <View style={styles.weekCategoryList}>
+      {categories.map((category) => {
+        const selected = category.key === selectedCategoryKey;
+
+        return (
+          <Pressable
+            key={category.key}
+            style={[
+              styles.weekCategoryChip,
+              isPhone62 && styles.weekCategoryChipPhone62,
+              {
+                backgroundColor: selected ? category.color : hexToRgba(category.color, 0.14),
+                borderColor: category.color,
+              },
+            ]}
+            onPress={() => onSelect(category.key)}
+          >
+            <Text
+              style={[
+                styles.weekCategoryChipText,
+                { color: selected ? '#ffffff' : category.color },
+              ]}
+            >
+              {category.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
 function TodoApp() {
   const { width, height } = useWindowDimensions();
   const [text, setText] = useState('');
@@ -643,12 +924,26 @@ function TodoApp() {
   const [locationCoords, setLocationCoords] = useState(null);
   const [todos, setTodos] = useState([]);
   const [filter, setFilter] = useState('active');
+  const [weekSchedule, setWeekSchedule] = useState([]);
+  const [weekCategories, setWeekCategories] = useState(WEEK_CATEGORIES);
+  const [weekViewMode, setWeekViewMode] = useState('list');
+  const [selectedWeekCategoryFilter, setSelectedWeekCategoryFilter] = useState('all');
+  const [scheduleDay, setScheduleDay] = useState(getCurrentWeekDayKey());
+  const [scheduleTitle, setScheduleTitle] = useState('');
+  const [scheduleTime, setScheduleTime] = useState('08:00');
+  const [scheduleCategoryKey, setScheduleCategoryKey] = useState(WEEK_CATEGORIES[0].key);
+  const [scheduleReminderEnabled, setScheduleReminderEnabled] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [newCategoryColor, setNewCategoryColor] = useState(WEEK_CATEGORY_COLOR_OPTIONS[0]);
+  const [editingCategoryKey, setEditingCategoryKey] = useState(null);
   const [showComposer, setShowComposer] = useState(false);
   const [shouldRenderComposer, setShouldRenderComposer] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [shouldRenderSettings, setShouldRenderSettings] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [shouldRenderEditModal, setShouldRenderEditModal] = useState(false);
+  const [showScheduleEditModal, setShowScheduleEditModal] = useState(false);
+  const [shouldRenderScheduleEditModal, setShouldRenderScheduleEditModal] = useState(false);
   const [showMapPicker, setShowMapPicker] = useState(false);
   const [mapHtml, setMapHtml] = useState('');
   const [mapRegion, setMapRegion] = useState(DEFAULT_MAP_REGION);
@@ -657,14 +952,22 @@ function TodoApp() {
   const [mapSearchResultLabel, setMapSearchResultLabel] = useState('');
   const [mapPickerTarget, setMapPickerTarget] = useState('create');
   const [editingTodoId, setEditingTodoId] = useState(null);
+  const [editingScheduleId, setEditingScheduleId] = useState(null);
   const [editText, setEditText] = useState('');
   const [editDescription, setEditDescription] = useState('');
   const [editLocation, setEditLocation] = useState('');
   const [editLocationCoords, setEditLocationCoords] = useState(null);
   const [editReminderAt, setEditReminderAt] = useState(null);
   const [editCompleted, setEditCompleted] = useState(false);
+  const [editScheduleDay, setEditScheduleDay] = useState(getCurrentWeekDayKey());
+  const [editScheduleTitle, setEditScheduleTitle] = useState('');
+  const [editScheduleTime, setEditScheduleTime] = useState('08:00');
+  const [editScheduleCategoryKey, setEditScheduleCategoryKey] = useState(WEEK_CATEGORIES[0].key);
+  const [editScheduleReminderEnabled, setEditScheduleReminderEnabled] = useState(false);
   const [reminderAt, setReminderAt] = useState(null);
   const [hasLoadedTodos, setHasLoadedTodos] = useState(false);
+  const [hasLoadedWeekSchedule, setHasLoadedWeekSchedule] = useState(false);
+  const [hasLoadedWeekCategories, setHasLoadedWeekCategories] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [hasLoadedSettings, setHasLoadedSettings] = useState(false);
   const [isGettingLocation, setIsGettingLocation] = useState(false);
@@ -674,6 +977,7 @@ function TodoApp() {
   const composerAnimation = useRef(new Animated.Value(0)).current;
   const settingsAnimation = useRef(new Animated.Value(0)).current;
   const editModalAnimation = useRef(new Animated.Value(0)).current;
+  const scheduleEditAnimation = useRef(new Animated.Value(0)).current;
   const filterContentAnimation = useRef(new Animated.Value(1)).current;
 
   const theme = isDarkMode ? DARK_THEME : LIGHT_THEME;
@@ -692,6 +996,8 @@ function TodoApp() {
     }
 
     loadTodos();
+    loadWeekSchedule();
+    loadWeekCategories();
     loadSettings();
     initializeNotifications();
   }, []);
@@ -711,6 +1017,39 @@ function TodoApp() {
 
     syncPendingSummaryReminders(todos);
   }, [hasLoadedTodos, todos]);
+
+  useEffect(() => {
+    if (!hasLoadedWeekSchedule) {
+      return;
+    }
+
+    saveWeekSchedule(weekSchedule);
+  }, [hasLoadedWeekSchedule, weekSchedule]);
+
+  useEffect(() => {
+    if (!hasLoadedWeekCategories) {
+      return;
+    }
+
+    saveWeekCategories(weekCategories);
+  }, [hasLoadedWeekCategories, weekCategories]);
+
+  useEffect(() => {
+    if (!weekCategories.find((category) => category.key === scheduleCategoryKey)) {
+      setScheduleCategoryKey(weekCategories[0]?.key ?? WEEK_CATEGORIES[0].key);
+    }
+
+    if (!weekCategories.find((category) => category.key === editScheduleCategoryKey)) {
+      setEditScheduleCategoryKey(weekCategories[0]?.key ?? WEEK_CATEGORIES[0].key);
+    }
+
+    if (
+      selectedWeekCategoryFilter !== 'all' &&
+      !weekCategories.find((category) => category.key === selectedWeekCategoryFilter)
+    ) {
+      setSelectedWeekCategoryFilter('all');
+    }
+  }, [editScheduleCategoryKey, scheduleCategoryKey, weekCategories]);
 
   useEffect(() => {
     if (!hasLoadedSettings) {
@@ -810,6 +1149,36 @@ function TodoApp() {
     });
   }, [editModalAnimation, showEditModal]);
 
+  useEffect(() => {
+    if (showScheduleEditModal) {
+      setShouldRenderScheduleEditModal(true);
+      scheduleEditAnimation.stopAnimation();
+      Animated.spring(scheduleEditAnimation, {
+        toValue: 1,
+        useNativeDriver: true,
+        damping: 22,
+        mass: 0.82,
+        stiffness: 170,
+        overshootClamping: true,
+        isInteraction: false,
+      }).start();
+      return;
+    }
+
+    scheduleEditAnimation.stopAnimation();
+    Animated.timing(scheduleEditAnimation, {
+      toValue: 0,
+      duration: 200,
+      easing: Easing.out(Easing.cubic),
+      isInteraction: false,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) {
+        setShouldRenderScheduleEditModal(false);
+      }
+    });
+  }, [scheduleEditAnimation, showScheduleEditModal]);
+
   async function initializeNotifications() {
     try {
       if (Platform.OS === 'android') {
@@ -871,6 +1240,40 @@ function TodoApp() {
     }
   }
 
+  async function loadWeekSchedule() {
+    try {
+      const savedSchedule = await AsyncStorage.getItem(WEEK_SCHEDULE_KEY);
+
+      if (!savedSchedule) {
+        setWeekSchedule([]);
+        return;
+      }
+
+      const parsedSchedule = JSON.parse(savedSchedule);
+      if (Array.isArray(parsedSchedule)) {
+        setWeekSchedule(
+          parsedSchedule.map((item, index) => ({
+            id: item.id,
+            dayKey: item.dayKey,
+            title: item.title,
+            time: formatScheduleTimeValue(item.time),
+            categoryKey: item.categoryKey ?? WEEK_CATEGORIES[0].key,
+            reminderEnabled: Boolean(item.reminderEnabled),
+            notificationId: item.notificationId ?? null,
+            order: typeof item.order === 'number' ? item.order : index,
+          })),
+        );
+      } else {
+        setWeekSchedule([]);
+      }
+    } catch (error) {
+      console.log('No se pudo cargar el horario semanal', error);
+      setWeekSchedule([]);
+    } finally {
+      setHasLoadedWeekSchedule(true);
+    }
+  }
+
   async function saveSettings(nextIsDarkMode) {
     try {
       await AsyncStorage.setItem(
@@ -888,6 +1291,85 @@ function TodoApp() {
     } catch (error) {
       console.log('No se pudieron guardar las tareas', error);
     }
+  }
+
+  async function saveWeekSchedule(nextWeekSchedule) {
+    try {
+      await AsyncStorage.setItem(WEEK_SCHEDULE_KEY, JSON.stringify(nextWeekSchedule));
+    } catch (error) {
+      console.log('No se pudo guardar el horario semanal', error);
+    }
+  }
+
+  async function loadWeekCategories() {
+    try {
+      const savedCategories = await AsyncStorage.getItem(WEEK_CATEGORIES_KEY);
+
+      if (!savedCategories) {
+        setWeekCategories(WEEK_CATEGORIES);
+        return;
+      }
+
+      const parsedCategories = JSON.parse(savedCategories);
+      if (Array.isArray(parsedCategories) && parsedCategories.length) {
+        setWeekCategories(
+          parsedCategories.map((category) => ({
+            key: category.key,
+            label: category.label,
+            color: category.color,
+          })),
+        );
+      } else {
+        setWeekCategories(WEEK_CATEGORIES);
+      }
+    } catch (error) {
+      console.log('No se pudieron cargar las categorias semanales', error);
+      setWeekCategories(WEEK_CATEGORIES);
+    } finally {
+      setHasLoadedWeekCategories(true);
+    }
+  }
+
+  async function saveWeekCategories(nextWeekCategories) {
+    try {
+      await AsyncStorage.setItem(WEEK_CATEGORIES_KEY, JSON.stringify(nextWeekCategories));
+    } catch (error) {
+      console.log('No se pudieron guardar las categorias semanales', error);
+    }
+  }
+
+  async function scheduleWeeklyReminder(scheduleItem) {
+    const { hours, minutes } = parseScheduleTime(scheduleItem.time);
+    let settings = await Notifications.getPermissionsAsync();
+
+    if (!settings.granted) {
+      settings = await Notifications.requestPermissionsAsync();
+    }
+
+    if (!settings.granted) {
+      throw new Error('notification-permission-denied');
+    }
+
+    return Notifications.scheduleNotificationAsync({
+      content: {
+        title: 'Actividad semanal',
+        body: `${scheduleItem.title} · ${getWeekCategory(scheduleItem.categoryKey, weekCategories).label}`,
+        sound: 'default',
+        priority: Notifications.AndroidNotificationPriority.DEFAULT,
+        channelId: NOTIFICATION_CHANNEL_ID,
+        data: {
+          kind: 'week-schedule',
+          scheduleId: scheduleItem.id,
+        },
+      },
+      trigger: {
+        channelId: NOTIFICATION_CHANNEL_ID,
+        weekday: getWeekdayNotificationValue(scheduleItem.dayKey),
+        hour: hours,
+        minute: minutes,
+        repeats: true,
+      },
+    });
   }
 
   async function scheduleReminder(todoTitle, reminderDate, todoLocation = '') {
@@ -1064,6 +1546,267 @@ function TodoApp() {
       }
     } catch (error) {
       console.log('No se pudo crear la tarea con recordatorio', error);
+      Alert.alert('No se pudo guardar', 'Vuelve a intentarlo.');
+    }
+  }
+
+  function openScheduleTimePicker(target = 'create') {
+    const currentTime = target === 'edit' ? editScheduleTime : scheduleTime;
+    const [hours, minutes] = formatScheduleTimeValue(currentTime).split(':').map(Number);
+    const baseDate = new Date();
+    baseDate.setHours(hours, minutes, 0, 0);
+
+    DateTimePickerAndroid.open({
+      value: baseDate,
+      mode: 'time',
+      is24Hour: true,
+      onChange: (event, selectedDate) => {
+        if (event.type !== 'set' || !selectedDate) {
+          return;
+        }
+
+        const nextTime = formatScheduleTimeValue(`${selectedDate.getHours()}:${selectedDate.getMinutes()}`);
+
+        if (target === 'edit') {
+          setEditScheduleTime(nextTime);
+          return;
+        }
+
+        setScheduleTime(nextTime);
+      },
+    });
+  }
+
+  async function addScheduleItem() {
+    const cleanTitle = scheduleTitle.trim();
+
+    if (!cleanTitle) {
+      Alert.alert('Escribe una actividad', 'Agrega el nombre de la actividad para ese horario.');
+      return;
+    }
+
+    const newScheduleItem = {
+      id: `week-${Date.now()}`,
+      dayKey: scheduleDay,
+      title: cleanTitle,
+      time: formatScheduleTimeValue(scheduleTime),
+      categoryKey: scheduleCategoryKey,
+      reminderEnabled: scheduleReminderEnabled,
+      notificationId: null,
+      order: getNextScheduleOrder(weekSchedule, scheduleDay),
+    };
+
+    let nextNotificationId = null;
+    let reminderWasSkipped = false;
+
+    if (scheduleReminderEnabled) {
+      try {
+        nextNotificationId = await scheduleWeeklyReminder(newScheduleItem);
+      } catch (error) {
+        console.log('No se pudo programar el recordatorio semanal', error);
+        reminderWasSkipped = true;
+      }
+    }
+
+    runSoftLayoutAnimation();
+    setWeekSchedule((current) => [...current, { ...newScheduleItem, notificationId: nextNotificationId }]);
+    setScheduleTitle('');
+    setScheduleCategoryKey(weekCategories[0]?.key ?? WEEK_CATEGORIES[0].key);
+    setScheduleReminderEnabled(false);
+    setShowComposer(false);
+
+    if (reminderWasSkipped) {
+      Alert.alert(
+        'Actividad guardada',
+        'La actividad se creó, pero el recordatorio semanal no se activó.',
+      );
+    }
+  }
+
+  const deleteScheduleItem = useCallback(async (id) => {
+    const selectedItem = weekSchedule.find((item) => item.id === id);
+
+    await cancelReminder(selectedItem?.notificationId);
+    runSoftLayoutAnimation();
+    setWeekSchedule((current) => current.filter((item) => item.id !== id));
+  }, [weekSchedule]);
+
+  function startEditingCategory(category) {
+    setEditingCategoryKey(category.key);
+    setNewCategoryName(category.label);
+    setNewCategoryColor(category.color);
+  }
+
+  function resetCategoryComposer() {
+    setEditingCategoryKey(null);
+    setNewCategoryName('');
+    setNewCategoryColor(WEEK_CATEGORY_COLOR_OPTIONS[0]);
+  }
+
+  function saveCustomCategory() {
+    const cleanName = newCategoryName.trim();
+
+    if (!cleanName) {
+      Alert.alert('Escribe una categoria', 'Pon un nombre antes de crear la categoria.');
+      return;
+    }
+
+    if (editingCategoryKey) {
+      runSoftLayoutAnimation();
+      setWeekCategories((current) =>
+        current.map((category) =>
+          category.key === editingCategoryKey
+            ? { ...category, label: cleanName, color: newCategoryColor }
+            : category,
+        ),
+      );
+      resetCategoryComposer();
+      return;
+    }
+
+    const nextKeyBase = buildCategoryKey(cleanName);
+    const nextKey = weekCategories.some((category) => category.key === nextKeyBase)
+      ? `${nextKeyBase}-${Date.now()}`
+      : nextKeyBase;
+
+    const nextCategory = {
+      key: nextKey,
+      label: cleanName,
+      color: newCategoryColor,
+    };
+
+    runSoftLayoutAnimation();
+    setWeekCategories((current) => [...current, nextCategory]);
+    setScheduleCategoryKey(nextCategory.key);
+    resetCategoryComposer();
+  }
+
+  function deleteCustomCategory(categoryKey) {
+    if (weekCategories.length <= 1) {
+      Alert.alert('No se puede borrar', 'Debe quedar al menos una categoria disponible.');
+      return;
+    }
+
+    const fallbackCategory = weekCategories.find((category) => category.key !== categoryKey);
+
+    if (!fallbackCategory) {
+      return;
+    }
+
+    runSoftLayoutAnimation();
+    setWeekCategories((current) => current.filter((category) => category.key !== categoryKey));
+    setWeekSchedule((current) =>
+      current.map((item) =>
+        item.categoryKey === categoryKey ? { ...item, categoryKey: fallbackCategory.key } : item,
+      ),
+    );
+
+    if (scheduleCategoryKey === categoryKey) {
+      setScheduleCategoryKey(fallbackCategory.key);
+    }
+
+    if (editScheduleCategoryKey === categoryKey) {
+      setEditScheduleCategoryKey(fallbackCategory.key);
+    }
+
+    if (selectedWeekCategoryFilter === categoryKey) {
+      setSelectedWeekCategoryFilter('all');
+    }
+
+    if (editingCategoryKey === categoryKey) {
+      resetCategoryComposer();
+    }
+  }
+
+  const handleScheduleDragEnd = useCallback((dayKey, orderedItems) => {
+    runSoftLayoutAnimation();
+    setWeekSchedule((current) => {
+      const nextOrderById = new Map(
+        orderedItems.map((item, index) => [item.id, index]),
+      );
+
+      return current.map((item) =>
+        item.dayKey === dayKey && nextOrderById.has(item.id)
+          ? { ...item, order: nextOrderById.get(item.id) }
+          : item,
+      );
+    });
+  }, []);
+
+  function openEditScheduleItem(scheduleItem) {
+    setEditingScheduleId(scheduleItem.id);
+    setEditScheduleDay(scheduleItem.dayKey);
+    setEditScheduleTitle(scheduleItem.title ?? '');
+    setEditScheduleTime(formatScheduleTimeValue(scheduleItem.time));
+    setEditScheduleCategoryKey(scheduleItem.categoryKey ?? weekCategories[0]?.key ?? WEEK_CATEGORIES[0].key);
+    setEditScheduleReminderEnabled(Boolean(scheduleItem.reminderEnabled));
+    setShowScheduleEditModal(true);
+  }
+
+  function closeScheduleEditModal() {
+    setShowScheduleEditModal(false);
+  }
+
+  async function saveEditedScheduleItem() {
+    const cleanTitle = editScheduleTitle.trim();
+    const selectedItem = weekSchedule.find((item) => item.id === editingScheduleId);
+
+    if (!selectedItem) {
+      return;
+    }
+
+    if (!cleanTitle) {
+      Alert.alert('Escribe una actividad', 'El nombre de la actividad no puede quedar vacio.');
+      return;
+    }
+
+    const nextScheduleItem = {
+      ...selectedItem,
+      dayKey: editScheduleDay,
+      title: cleanTitle,
+      time: formatScheduleTimeValue(editScheduleTime),
+      categoryKey: editScheduleCategoryKey,
+      reminderEnabled: editScheduleReminderEnabled,
+      notificationId: null,
+      order:
+        selectedItem.dayKey === editScheduleDay
+          ? selectedItem.order
+          : getNextScheduleOrder(weekSchedule, editScheduleDay),
+    };
+
+    let nextNotificationId = null;
+    let reminderWasSkipped = false;
+
+    try {
+      await cancelReminder(selectedItem.notificationId);
+
+      if (editScheduleReminderEnabled) {
+        try {
+          nextNotificationId = await scheduleWeeklyReminder(nextScheduleItem);
+        } catch (error) {
+          console.log('No se pudo actualizar el recordatorio semanal', error);
+          reminderWasSkipped = true;
+        }
+      }
+
+      runSoftLayoutAnimation();
+      setWeekSchedule((current) =>
+        current.map((item) =>
+          item.id === editingScheduleId
+            ? { ...nextScheduleItem, notificationId: nextNotificationId }
+            : item,
+        ),
+      );
+      closeScheduleEditModal();
+
+      if (reminderWasSkipped) {
+        Alert.alert(
+          'Actividad actualizada',
+          'Se guardaron los cambios, pero no se pudo activar el recordatorio semanal.',
+        );
+      }
+    } catch (error) {
+      console.log('No se pudo editar la actividad semanal', error);
       Alert.alert('No se pudo guardar', 'Vuelve a intentarlo.');
     }
   }
@@ -1629,6 +2372,31 @@ function TodoApp() {
     ],
   };
 
+  const scheduleEditOverlayAnimatedStyle = {
+    opacity: scheduleEditAnimation.interpolate({
+      inputRange: [0, 1],
+      outputRange: [0, 1],
+    }),
+  };
+
+  const scheduleEditCardAnimatedStyle = {
+    opacity: scheduleEditAnimation,
+    transform: [
+      {
+        translateY: scheduleEditAnimation.interpolate({
+          inputRange: [0, 1],
+          outputRange: [12, 0],
+        }),
+      },
+      {
+        scale: scheduleEditAnimation.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0.985, 1],
+        }),
+      },
+    ],
+  };
+
   const filterContentAnimatedStyle = {
     opacity: filterContentAnimation,
     transform: [
@@ -1655,14 +2423,32 @@ function TodoApp() {
         return todos.filter((todo) => isOverdueTodo(todo));
       case 'done':
         return todos.filter((todo) => todo.completed);
+      case 'week':
+        return [];
       default:
         return todos.filter((todo) => !todo.completed);
     }
   }, [filter, todos]);
 
+  const weeklyScheduleByDay = useMemo(
+    () =>
+      WEEK_DAYS.map((day) => ({
+        ...day,
+        items: weekSchedule
+          .filter(
+            (item) =>
+              item.dayKey === day.key &&
+              (selectedWeekCategoryFilter === 'all' || item.categoryKey === selectedWeekCategoryFilter),
+          )
+          .sort(compareScheduleItems),
+      })),
+    [selectedWeekCategoryFilter, weekSchedule],
+  );
+
   const pendingCount = todos.filter((todo) => !todo.completed).length;
   const overdueCount = todos.filter((todo) => isOverdueTodo(todo)).length;
   const completedCount = todos.filter((todo) => todo.completed).length;
+  const weeklyActivityCount = weeklyScheduleByDay.reduce((total, day) => total + day.items.length, 0);
   const listHeader = (
     <>
       <View style={[styles.header, isPhone62 && styles.headerPhone62]}>
@@ -1674,7 +2460,7 @@ function TodoApp() {
               dynamicTitleStyle,
             ]}
           >
-            Cosas que tengo que hacer
+            {filter === 'week' ? 'Horario semanal' : 'Cosas que tengo que hacer'}
           </Text>
         </View>
       </View>
@@ -1687,7 +2473,9 @@ function TodoApp() {
         ]}
       >
         <Text style={[styles.summaryText, isPhone62 && styles.summaryTextPhone62, { color: theme.text }]}>
-          {filter === 'overdue'
+          {filter === 'week'
+            ? `${weeklyActivityCount} actividades esta semana`
+            : filter === 'overdue'
             ? `${overdueCount} no completadas`
             : filter === 'done'
               ? `${completedCount} completadas`
@@ -1700,43 +2488,100 @@ function TodoApp() {
         ) : null}
       </Animated.View>
 
-      <View style={[styles.filterSection, (isCompact || shouldStackFilters) && styles.filterSectionCompact]}>
-        <View
-          style={[
-            styles.filterGroup,
-            (isCompact || shouldStackFilters) && styles.filterGroupCompact,
-            (isPhone62 || shouldStackFilters) && styles.filterGroupPhone62,
-          ]}
-        >
-          {FILTERS.map((item) => {
-            const selected = item.key === filter;
-            return (
-              <Pressable
-                key={item.key}
-                style={[
-                  styles.filterButton,
-                  (isPhone62 || shouldStackFilters) && styles.filterButtonPhone62,
-                  { backgroundColor: theme.chip },
-                  !selected && { borderColor: theme.border, borderWidth: 1 },
-                  selected && [styles.filterButtonActive, { backgroundColor: theme.text }],
-                  isVeryCompact && styles.filterButtonCompact,
-                ]}
-                onPress={() => handleFilterChange(item.key)}
-              >
-                <Text
-                  allowFontScaling={false}
+      {filter === 'week' ? (
+        <>
+          <View style={[styles.weekViewToggleRow, isCompact && styles.weekViewToggleRowCompact]}>
+            {[{ key: 'list', label: 'Lista' }, { key: 'calendar', label: 'Calendario' }].map((viewMode) => {
+              const selected = weekViewMode === viewMode.key;
+
+              return (
+                <Pressable
+                  key={viewMode.key}
                   style={[
-                    styles.filterButtonText,
-                    (isPhone62 || shouldStackFilters) && styles.filterButtonTextPhone62,
-                    { color: theme.text },
-                    selected && [styles.filterButtonTextActive, { color: theme.background }],
+                    styles.weekViewToggleButton,
+                    { backgroundColor: selected ? theme.text : theme.surfaceAlt, borderColor: theme.border },
                   ]}
+                  onPress={() => setWeekViewMode(viewMode.key)}
                 >
-                  {item.label}
-                </Text>
-              </Pressable>
-            );
-          })}
+                  <Text style={[styles.weekViewToggleButtonText, { color: selected ? theme.background : theme.text }]}>
+                    {viewMode.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.weekFilterScroll}
+          >
+            <Pressable
+              style={[
+                styles.weekFilterChip,
+                { backgroundColor: selectedWeekCategoryFilter === 'all' ? theme.text : theme.surfaceAlt, borderColor: theme.border },
+              ]}
+              onPress={() => setSelectedWeekCategoryFilter('all')}
+            >
+              <Text style={[styles.weekFilterChipText, { color: selectedWeekCategoryFilter === 'all' ? theme.background : theme.text }]}>Todas</Text>
+            </Pressable>
+            {weekCategories.map((category) => {
+              const selected = selectedWeekCategoryFilter === category.key;
+
+              return (
+                <Pressable
+                  key={category.key}
+                  style={[
+                    styles.weekFilterChip,
+                    { backgroundColor: selected ? category.color : hexToRgba(category.color, 0.14), borderColor: category.color },
+                  ]}
+                  onPress={() => setSelectedWeekCategoryFilter(category.key)}
+                >
+                  <Text style={[styles.weekFilterChipText, { color: selected ? '#ffffff' : category.color }]}>{category.label}</Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </>
+      ) : null}
+
+      <View style={[styles.filterSection, (isCompact || shouldStackFilters) && styles.filterSectionCompact]}>
+        <View style={[styles.filterTabBar, { backgroundColor: theme.surfaceAlt, borderColor: theme.border }]}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.filterTabBarContent}
+          >
+            {FILTERS.map((item) => {
+              const selected = item.key === filter;
+              return (
+                <Pressable
+                  key={item.key}
+                  style={[
+                    styles.filterButton,
+                    (isPhone62 || shouldStackFilters) && styles.filterButtonPhone62,
+                    { backgroundColor: 'transparent' },
+                    !selected && { borderColor: 'transparent', borderWidth: 1 },
+                    selected && [styles.filterButtonActive, { backgroundColor: theme.surface }],
+                    isVeryCompact && styles.filterButtonCompact,
+                  ]}
+                  onPress={() => handleFilterChange(item.key)}
+                >
+                  <Text
+                    allowFontScaling={false}
+                    style={[
+                      styles.filterButtonText,
+                      (isPhone62 || shouldStackFilters) && styles.filterButtonTextPhone62,
+                      { color: theme.mutedText },
+                      selected && [styles.filterButtonTextActive, { color: theme.text }],
+                    ]}
+                  >
+                    {item.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
         </View>
 
         <View
@@ -1770,144 +2615,321 @@ function TodoApp() {
               composerAnimatedStyle,
             ]}
           >
-            <View style={[styles.inputRow, isCompact && styles.inputRowCompact]}>
-              <TextInput
-                value={text}
-                onChangeText={setText}
-                placeholder="Escribe una tarea..."
-                placeholderTextColor={theme.mutedText}
-                style={[
-                  styles.input,
-                  isPhone62 && styles.inputPhone62,
-                  { backgroundColor: theme.surfaceAlt, color: theme.text },
-                ]}
-                returnKeyType="done"
-                onSubmitEditing={addTodo}
-              />
-              <Pressable
-                style={[
-                  styles.addButton,
-                  isPhone62 && styles.addButtonPhone62,
-                  { backgroundColor: theme.primary },
-                  isCompact && styles.addButtonCompact,
-                ]}
-                onPress={addTodo}
-              >
-                <Text style={[styles.addButtonText, isPhone62 && styles.addButtonTextPhone62]}>Agregar</Text>
-              </Pressable>
-            </View>
+            {filter === 'week' ? (
+              <>
+                <View style={styles.weekComposerSection}>
+                  <Text style={[styles.locationLabel, isPhone62 && styles.sectionLabelPhone62, { color: theme.text }]}>Dia</Text>
+                  <View style={styles.weekDaySelector}>
+                    {WEEK_DAYS.map((day) => {
+                      const selected = day.key === scheduleDay;
 
-            <View style={styles.descriptionSection}>
-              <Text style={[styles.locationLabel, isPhone62 && styles.sectionLabelPhone62, { color: theme.text }]}>Descripción</Text>
-              <TextInput
-                value={description}
-                onChangeText={setDescription}
-                placeholder="Añade más detalles para esta tarea"
-                placeholderTextColor={theme.mutedText}
-                style={[
-                  styles.descriptionInput,
-                  isPhone62 && styles.descriptionInputPhone62,
-                  { backgroundColor: theme.surfaceAlt, color: theme.text },
-                ]}
-                multiline
-                textAlignVertical="top"
-              />
-            </View>
+                      return (
+                        <Pressable
+                          key={day.key}
+                          style={[
+                            styles.weekDayChip,
+                            { backgroundColor: selected ? theme.text : theme.surfaceAlt, borderColor: theme.border },
+                          ]}
+                          onPress={() => setScheduleDay(day.key)}
+                        >
+                          <Text style={[styles.weekDayChipText, { color: selected ? theme.background : theme.text }]}>
+                            {day.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
 
-            <View style={styles.locationSection}>
-              <Text style={[styles.locationLabel, isPhone62 && styles.sectionLabelPhone62, { color: theme.text }]}>Ubicación</Text>
-              <TextInput
-                value={location}
-                onChangeText={handleLocationChange}
-                placeholder="Ejemplo: colegio, gimnasio o casa"
-                placeholderTextColor={theme.mutedText}
-                style={[
-                  styles.locationInput,
-                  isPhone62 && styles.locationInputPhone62,
-                  { backgroundColor: theme.surfaceAlt, color: theme.text },
-                ]}
-              />
-              <Pressable
-                style={[
-                  styles.currentLocationButton,
-                  isPhone62 && styles.currentLocationButtonPhone62,
-                  { backgroundColor: theme.primarySoft },
-                  isGettingLocation && styles.currentLocationButtonDisabled,
-                ]}
-                onPress={useCurrentLocation}
-                disabled={isGettingLocation}
-              >
-                <Text style={[styles.currentLocationButtonText, isPhone62 && styles.currentLocationButtonTextPhone62, { color: theme.primaryText }]}> 
-                  {isGettingLocation ? 'Obteniendo ubicación...' : 'Usar mi ubicación actual'}
-                </Text>
-              </Pressable>
-              <Pressable
-                style={[
-                  styles.currentLocationButton,
-                  isPhone62 && styles.currentLocationButtonPhone62,
-                  { backgroundColor: theme.surfaceAlt },
-                  isResolvingMapLocation && styles.currentLocationButtonDisabled,
-                ]}
-                onPress={openMapPicker}
-                disabled={isResolvingMapLocation}
-              >
-                <Text style={[styles.currentLocationButtonText, isPhone62 && styles.currentLocationButtonTextPhone62, { color: theme.text }]}> 
-                  {isResolvingMapLocation ? 'Abriendo mapa...' : 'Elegir ubicación en el mapa'}
-                </Text>
-              </Pressable>
-              <Text style={[styles.locationHint, isPhone62 && styles.locationHintPhone62, { color: theme.mutedText }]}> 
-                Agrégala si esta tarea requiere ir a un lugar o usa tu ubicación real.
-              </Text>
-            </View>
+                <View style={styles.weekComposerSection}>
+                  <Text style={[styles.locationLabel, isPhone62 && styles.sectionLabelPhone62, { color: theme.text }]}>Categoria</Text>
+                  <WeekCategorySelector
+                    categories={weekCategories}
+                    selectedCategoryKey={scheduleCategoryKey}
+                    onSelect={setScheduleCategoryKey}
+                    isPhone62={isPhone62}
+                  />
+                </View>
 
-            <View style={styles.reminderSection}>
-              <Text style={[styles.reminderLabel, isPhone62 && styles.sectionLabelPhone62, { color: theme.text }]}>Fecha y hora del recordatorio</Text>
+                <View style={styles.weekComposerSection}>
+                  <Text style={[styles.locationLabel, isPhone62 && styles.sectionLabelPhone62, { color: theme.text }]}>Nueva categoria</Text>
+                  <View style={[styles.inputRow, isCompact && styles.inputRowCompact]}>
+                    <TextInput
+                      value={newCategoryName}
+                      onChangeText={setNewCategoryName}
+                      placeholder="Ejemplo: Musica o Ingles"
+                      placeholderTextColor={theme.mutedText}
+                      style={[
+                        styles.input,
+                        isPhone62 && styles.inputPhone62,
+                        { backgroundColor: theme.surfaceAlt, color: theme.text },
+                      ]}
+                    />
+                    <Pressable
+                      style={[
+                        styles.addButton,
+                        isPhone62 && styles.addButtonPhone62,
+                        { backgroundColor: theme.primary },
+                        isCompact && styles.addButtonCompact,
+                      ]}
+                      onPress={saveCustomCategory}
+                    >
+                      <Text style={[styles.addButtonText, isPhone62 && styles.addButtonTextPhone62]}>
+                        {editingCategoryKey ? 'Guardar' : 'Crear'}
+                      </Text>
+                    </Pressable>
+                  </View>
+                  <View style={styles.weekColorSelector}>
+                    {WEEK_CATEGORY_COLOR_OPTIONS.map((color) => {
+                      const selected = newCategoryColor === color;
 
-              <View style={[styles.reminderButtonsRow, isCompact && styles.reminderButtonsRowCompact]}>
-                <Pressable
-                  style={[
-                    styles.reminderButton,
-                    isPhone62 && styles.reminderButtonPhone62,
-                    { backgroundColor: theme.primarySoft },
-                    isCompact && styles.reminderButtonCompact,
-                  ]}
-                  onPress={openDatePicker}
-                >
-                  <Text style={[styles.reminderButtonText, isPhone62 && styles.reminderButtonTextPhone62, { color: theme.primaryText }]}> 
-                    {reminderAt ? formatDate(reminderAt) : 'Elegir fecha'}
-                  </Text>
-                </Pressable>
+                      return (
+                        <Pressable
+                          key={color}
+                          style={[
+                            styles.weekColorDot,
+                            { backgroundColor: color, borderColor: selected ? theme.text : color },
+                            selected && styles.weekColorDotSelected,
+                          ]}
+                          onPress={() => setNewCategoryColor(color)}
+                        />
+                      );
+                    })}
+                  </View>
+                  <View style={styles.weekCategoryManagerList}>
+                    {weekCategories.map((category) => (
+                      <View
+                        key={category.key}
+                        style={[styles.weekCategoryManagerRow, { backgroundColor: theme.surfaceAlt, borderColor: theme.border }]}
+                      >
+                        <View style={styles.weekCategoryManagerInfo}>
+                          <View style={[styles.weekCategoryManagerColor, { backgroundColor: category.color }]} />
+                          <Text style={[styles.weekCategoryManagerText, { color: theme.text }]}>{category.label}</Text>
+                        </View>
+                        <View style={styles.weekCategoryManagerActions}>
+                          <Pressable
+                            style={[styles.weekTinyButton, { backgroundColor: theme.primarySoft }]}
+                            onPress={() => startEditingCategory(category)}
+                          >
+                            <Text style={[styles.weekTinyButtonText, { color: theme.primaryText }]}>Editar</Text>
+                          </Pressable>
+                          <Pressable
+                            style={[styles.weekTinyButton, { backgroundColor: theme.dangerSoft }]}
+                            onPress={() => deleteCustomCategory(category.key)}
+                          >
+                            <Text style={[styles.weekTinyButtonText, { color: theme.dangerText }]}>Borrar</Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                  {editingCategoryKey ? (
+                    <Pressable onPress={resetCategoryComposer}>
+                      <Text style={[styles.weekCancelEditText, { color: theme.mutedText }]}>Cancelar edicion de categoria</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
 
-                <Pressable
-                  style={[
-                    styles.reminderButton,
-                    isPhone62 && styles.reminderButtonPhone62,
-                    { backgroundColor: theme.primarySoft },
-                    isCompact && styles.reminderButtonCompact,
-                  ]}
-                  onPress={openTimePicker}
-                >
-                  <Text style={[styles.reminderButtonText, isPhone62 && styles.reminderButtonTextPhone62, { color: theme.primaryText }]}> 
-                    {reminderAt ? formatTime(reminderAt) : 'Elegir hora'}
-                  </Text>
-                </Pressable>
-              </View>
-
-              {reminderAt ? (
-                <View style={[styles.reminderPreviewRow, isPhone62 && styles.reminderPreviewRowPhone62]}>
-                  <Text style={[styles.reminderPreviewText, isPhone62 && styles.reminderPreviewTextPhone62, { color: theme.secondaryText }]}> 
-                    Recordatorio: {formatDateTime(reminderAt)}
-                  </Text>
-                  <Pressable onPress={() => setReminderAt(null)}>
-                    <Text style={[styles.reminderClearText, { color: theme.dangerText }]}>Quitar</Text>
+                <View style={[styles.inputRow, isCompact && styles.inputRowCompact]}>
+                  <TextInput
+                    value={scheduleTitle}
+                    onChangeText={setScheduleTitle}
+                    placeholder="Escribe una actividad..."
+                    placeholderTextColor={theme.mutedText}
+                    style={[
+                      styles.input,
+                      isPhone62 && styles.inputPhone62,
+                      { backgroundColor: theme.surfaceAlt, color: theme.text },
+                    ]}
+                    returnKeyType="done"
+                    onSubmitEditing={addScheduleItem}
+                  />
+                  <Pressable
+                    style={[
+                      styles.addButton,
+                      isPhone62 && styles.addButtonPhone62,
+                      { backgroundColor: theme.primary },
+                      isCompact && styles.addButtonCompact,
+                    ]}
+                    onPress={addScheduleItem}
+                  >
+                    <Text style={[styles.addButtonText, isPhone62 && styles.addButtonTextPhone62]}>Agregar</Text>
                   </Pressable>
                 </View>
-              ) : (
-                <Text style={[styles.reminderHint, { color: theme.mutedText }]}> 
-                  Si eliges fecha y hora, la app te enviará una notificación.
-                </Text>
-              )}
-            </View>
+
+                <View style={styles.weekComposerSection}>
+                  <Text style={[styles.locationLabel, isPhone62 && styles.sectionLabelPhone62, { color: theme.text }]}>Hora</Text>
+                  <Pressable
+                    style={[
+                      styles.reminderButton,
+                      isPhone62 && styles.reminderButtonPhone62,
+                      { backgroundColor: theme.primarySoft },
+                    ]}
+                    onPress={openScheduleTimePicker}
+                  >
+                    <Text style={[styles.reminderButtonText, isPhone62 && styles.reminderButtonTextPhone62, { color: theme.primaryText }]}> 
+                      {formatScheduleTimeValue(scheduleTime)}
+                    </Text>
+                  </Pressable>
+                  <View style={[styles.optionRow, styles.weekOptionRow, { borderBottomColor: theme.border }]}> 
+                    <View style={styles.optionTextWrap}>
+                      <Text style={[styles.optionTitle, { color: theme.text }]}>Recordatorio semanal</Text>
+                      <Text style={[styles.optionSubtitle, { color: theme.mutedText }]}>Se repetira cada semana en ese dia y hora.</Text>
+                    </View>
+                    <Switch
+                      value={scheduleReminderEnabled}
+                      onValueChange={setScheduleReminderEnabled}
+                      trackColor={{ false: theme.chip, true: theme.primary }}
+                      thumbColor="#ffffff"
+                    />
+                  </View>
+                  <Text style={[styles.weekComposerHint, { color: theme.mutedText }]}> 
+                    La actividad se guardara en el dia seleccionado dentro del apartado Semana.
+                  </Text>
+                </View>
+              </>
+            ) : (
+              <>
+                <View style={[styles.inputRow, isCompact && styles.inputRowCompact]}>
+                  <TextInput
+                    value={text}
+                    onChangeText={setText}
+                    placeholder="Escribe una tarea..."
+                    placeholderTextColor={theme.mutedText}
+                    style={[
+                      styles.input,
+                      isPhone62 && styles.inputPhone62,
+                      { backgroundColor: theme.surfaceAlt, color: theme.text },
+                    ]}
+                    returnKeyType="done"
+                    onSubmitEditing={addTodo}
+                  />
+                  <Pressable
+                    style={[
+                      styles.addButton,
+                      isPhone62 && styles.addButtonPhone62,
+                      { backgroundColor: theme.primary },
+                      isCompact && styles.addButtonCompact,
+                    ]}
+                    onPress={addTodo}
+                  >
+                    <Text style={[styles.addButtonText, isPhone62 && styles.addButtonTextPhone62]}>Agregar</Text>
+                  </Pressable>
+                </View>
+
+                <View style={styles.descriptionSection}>
+                  <Text style={[styles.locationLabel, isPhone62 && styles.sectionLabelPhone62, { color: theme.text }]}>Descripción</Text>
+                  <TextInput
+                    value={description}
+                    onChangeText={setDescription}
+                    placeholder="Añade más detalles para esta tarea"
+                    placeholderTextColor={theme.mutedText}
+                    style={[
+                      styles.descriptionInput,
+                      isPhone62 && styles.descriptionInputPhone62,
+                      { backgroundColor: theme.surfaceAlt, color: theme.text },
+                    ]}
+                    multiline
+                    textAlignVertical="top"
+                  />
+                </View>
+
+                <View style={styles.locationSection}>
+                  <Text style={[styles.locationLabel, isPhone62 && styles.sectionLabelPhone62, { color: theme.text }]}>Ubicación</Text>
+                  <TextInput
+                    value={location}
+                    onChangeText={handleLocationChange}
+                    placeholder="Ejemplo: colegio, gimnasio o casa"
+                    placeholderTextColor={theme.mutedText}
+                    style={[
+                      styles.locationInput,
+                      isPhone62 && styles.locationInputPhone62,
+                      { backgroundColor: theme.surfaceAlt, color: theme.text },
+                    ]}
+                  />
+                  <Pressable
+                    style={[
+                      styles.currentLocationButton,
+                      isPhone62 && styles.currentLocationButtonPhone62,
+                      { backgroundColor: theme.primarySoft },
+                      isGettingLocation && styles.currentLocationButtonDisabled,
+                    ]}
+                    onPress={useCurrentLocation}
+                    disabled={isGettingLocation}
+                  >
+                    <Text style={[styles.currentLocationButtonText, isPhone62 && styles.currentLocationButtonTextPhone62, { color: theme.primaryText }]}> 
+                      {isGettingLocation ? 'Obteniendo ubicación...' : 'Usar mi ubicación actual'}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    style={[
+                      styles.currentLocationButton,
+                      isPhone62 && styles.currentLocationButtonPhone62,
+                      { backgroundColor: theme.surfaceAlt },
+                      isResolvingMapLocation && styles.currentLocationButtonDisabled,
+                    ]}
+                    onPress={openMapPicker}
+                    disabled={isResolvingMapLocation}
+                  >
+                    <Text style={[styles.currentLocationButtonText, isPhone62 && styles.currentLocationButtonTextPhone62, { color: theme.text }]}> 
+                      {isResolvingMapLocation ? 'Abriendo mapa...' : 'Elegir ubicación en el mapa'}
+                    </Text>
+                  </Pressable>
+                  <Text style={[styles.locationHint, isPhone62 && styles.locationHintPhone62, { color: theme.mutedText }]}> 
+                    Agrégala si esta tarea requiere ir a un lugar o usa tu ubicación real.
+                  </Text>
+                </View>
+
+                <View style={styles.reminderSection}>
+                  <Text style={[styles.reminderLabel, isPhone62 && styles.sectionLabelPhone62, { color: theme.text }]}>Fecha y hora del recordatorio</Text>
+
+                  <View style={[styles.reminderButtonsRow, isCompact && styles.reminderButtonsRowCompact]}>
+                    <Pressable
+                      style={[
+                        styles.reminderButton,
+                        isPhone62 && styles.reminderButtonPhone62,
+                        { backgroundColor: theme.primarySoft },
+                        isCompact && styles.reminderButtonCompact,
+                      ]}
+                      onPress={openDatePicker}
+                    >
+                      <Text style={[styles.reminderButtonText, isPhone62 && styles.reminderButtonTextPhone62, { color: theme.primaryText }]}> 
+                        {reminderAt ? formatDate(reminderAt) : 'Elegir fecha'}
+                      </Text>
+                    </Pressable>
+
+                    <Pressable
+                      style={[
+                        styles.reminderButton,
+                        isPhone62 && styles.reminderButtonPhone62,
+                        { backgroundColor: theme.primarySoft },
+                        isCompact && styles.reminderButtonCompact,
+                      ]}
+                      onPress={openTimePicker}
+                    >
+                      <Text style={[styles.reminderButtonText, isPhone62 && styles.reminderButtonTextPhone62, { color: theme.primaryText }]}> 
+                        {reminderAt ? formatTime(reminderAt) : 'Elegir hora'}
+                      </Text>
+                    </Pressable>
+                  </View>
+
+                  {reminderAt ? (
+                    <View style={[styles.reminderPreviewRow, isPhone62 && styles.reminderPreviewRowPhone62]}>
+                      <Text style={[styles.reminderPreviewText, isPhone62 && styles.reminderPreviewTextPhone62, { color: theme.secondaryText }]}> 
+                        Recordatorio: {formatDateTime(reminderAt)}
+                      </Text>
+                      <Pressable onPress={() => setReminderAt(null)}>
+                        <Text style={[styles.reminderClearText, { color: theme.dangerText }]}>Quitar</Text>
+                      </Pressable>
+                    </View>
+                  ) : (
+                    <Text style={[styles.reminderHint, { color: theme.mutedText }]}> 
+                      Si eliges fecha y hora, la app te enviará una notificación.
+                    </Text>
+                  )}
+                </View>
+              </>
+            )}
           </Animated.View>
         ) : null}
       </View>
@@ -2163,33 +3185,197 @@ function TodoApp() {
           </Animated.View>
         </Modal>
 
-        <Animated.View style={[styles.filterContentWrap, filterContentAnimatedStyle]}>
-          <FlatList
-            data={filteredTodos}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={styles.listContent}
-            showsVerticalScrollIndicator={false}
-            removeClippedSubviews={false}
-            initialNumToRender={8}
-            maxToRenderPerBatch={8}
-            windowSize={7}
-            ListHeaderComponent={listHeader}
-            ListEmptyComponent={
-              <View style={[styles.emptyState, { backgroundColor: theme.surface }]}> 
-                <Text style={[styles.emptyTitle, { color: theme.text }]}>
-                  {filter === 'overdue' ? 'No hay tareas vencidas' : 'Ya terminé todo'}
-                </Text>
-                <Text style={[styles.emptyText, { color: theme.mutedText }]}> 
-                  {filter === 'overdue'
-                    ? 'Las tareas con fecha y hora vencidas aparecerán aquí.'
-                    : 'Agrega una nueva tarea para seguir organizando su día.'}
-                </Text>
+        <Modal
+          visible={shouldRenderScheduleEditModal}
+          transparent
+          animationType="fade"
+          onRequestClose={closeScheduleEditModal}
+        >
+          <Animated.View
+            style={[
+              styles.modalOverlay,
+              isPhone62 && styles.modalOverlayPhone62,
+              { backgroundColor: theme.overlay },
+              scheduleEditOverlayAnimatedStyle,
+            ]}
+          >
+            <Animated.View
+              style={[
+                styles.modalCard,
+                styles.editModalCard,
+                isPhone62 && styles.modalCardPhone62,
+                isPhone62 && styles.editModalCardPhone62,
+                { backgroundColor: theme.surface },
+                scheduleEditCardAnimatedStyle,
+              ]}
+            >
+              <Text style={[styles.modalTitle, isPhone62 && styles.modalTitlePhone62, { color: theme.text }]}>Editar actividad semanal</Text>
+
+              <ScrollView
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={styles.editScrollContent}
+              >
+                <View style={styles.weekComposerSection}>
+                  <Text style={[styles.locationLabel, isPhone62 && styles.sectionLabelPhone62, { color: theme.text }]}>Dia</Text>
+                  <View style={styles.weekDaySelector}>
+                    {WEEK_DAYS.map((day) => {
+                      const selected = day.key === editScheduleDay;
+
+                      return (
+                        <Pressable
+                          key={day.key}
+                          style={[
+                            styles.weekDayChip,
+                            { backgroundColor: selected ? theme.text : theme.surfaceAlt, borderColor: theme.border },
+                          ]}
+                          onPress={() => setEditScheduleDay(day.key)}
+                        >
+                          <Text style={[styles.weekDayChipText, { color: selected ? theme.background : theme.text }]}>
+                            {day.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+
+                <View style={[styles.inputRow, isCompact && styles.inputRowCompact]}>
+                  <TextInput
+                    value={editScheduleTitle}
+                    onChangeText={setEditScheduleTitle}
+                    placeholder="Escribe una actividad..."
+                    placeholderTextColor={theme.mutedText}
+                    style={[
+                      styles.input,
+                      isPhone62 && styles.inputPhone62,
+                      { backgroundColor: theme.surfaceAlt, color: theme.text },
+                    ]}
+                    returnKeyType="done"
+                    onSubmitEditing={saveEditedScheduleItem}
+                  />
+                </View>
+
+                <View style={styles.weekComposerSection}>
+                  <Text style={[styles.locationLabel, isPhone62 && styles.sectionLabelPhone62, { color: theme.text }]}>Categoria</Text>
+                  <WeekCategorySelector
+                    categories={weekCategories}
+                    selectedCategoryKey={editScheduleCategoryKey}
+                    onSelect={setEditScheduleCategoryKey}
+                    isPhone62={isPhone62}
+                  />
+                </View>
+
+                <View style={styles.weekComposerSection}>
+                  <Text style={[styles.locationLabel, isPhone62 && styles.sectionLabelPhone62, { color: theme.text }]}>Hora</Text>
+                  <Pressable
+                    style={[
+                      styles.reminderButton,
+                      isPhone62 && styles.reminderButtonPhone62,
+                      { backgroundColor: theme.primarySoft },
+                    ]}
+                    onPress={() => openScheduleTimePicker('edit')}
+                  >
+                    <Text style={[styles.reminderButtonText, isPhone62 && styles.reminderButtonTextPhone62, { color: theme.primaryText }]}> 
+                      {formatScheduleTimeValue(editScheduleTime)}
+                    </Text>
+                  </Pressable>
+                </View>
+
+                <View style={[styles.optionRow, styles.weekOptionRow, { borderBottomColor: theme.border }]}> 
+                  <View style={styles.optionTextWrap}>
+                    <Text style={[styles.optionTitle, { color: theme.text }]}>Recordatorio semanal</Text>
+                    <Text style={[styles.optionSubtitle, { color: theme.mutedText }]}>Se repetira cada semana en este bloque.</Text>
+                  </View>
+                  <Switch
+                    value={editScheduleReminderEnabled}
+                    onValueChange={setEditScheduleReminderEnabled}
+                    trackColor={{ false: theme.chip, true: theme.primary }}
+                    thumbColor="#ffffff"
+                  />
+                </View>
+              </ScrollView>
+
+              <View style={styles.editActionsRow}>
+                <Pressable
+                  style={[styles.editActionButton, { backgroundColor: theme.surfaceAlt }]}
+                  onPress={closeScheduleEditModal}
+                >
+                  <Text style={[styles.editActionButtonText, { color: theme.text }]}>Cancelar</Text>
+                </Pressable>
+
+                <Pressable
+                  style={[styles.editActionButton, { backgroundColor: theme.primary }]}
+                  onPress={saveEditedScheduleItem}
+                >
+                  <Text style={[styles.editActionButtonText, styles.mapActionButtonTextPrimary]}>Guardar cambios</Text>
+                </Pressable>
               </View>
-            }
-            renderItem={({ item }) => (
-              <TodoItem item={item} theme={theme} onToggle={toggleTodo} onDelete={deleteTodo} onEdit={openEditTodo} isPhone62={isPhone62} />
-            )}
-          />
+            </Animated.View>
+          </Animated.View>
+        </Modal>
+
+        <Animated.View style={[styles.filterContentWrap, filterContentAnimatedStyle]}>
+          {filter === 'week' ? (
+            <NestableScrollContainer contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
+              {listHeader}
+              {weekViewMode === 'calendar' ? (
+                <View style={styles.weekCalendarGrid}>
+                  {weeklyScheduleByDay.map((day) => (
+                    <WeekCalendarCard
+                      key={day.key}
+                      day={day}
+                      categories={weekCategories}
+                      theme={theme}
+                      isPhone62={isPhone62}
+                    />
+                  ))}
+                </View>
+              ) : (
+                <View style={styles.weekDaysList}>
+                  {weeklyScheduleByDay.map((day) => (
+                    <ScheduleDayCard
+                      key={day.key}
+                      day={day}
+                      items={day.items}
+                      categories={weekCategories}
+                      theme={theme}
+                      onEdit={openEditScheduleItem}
+                      onDelete={deleteScheduleItem}
+                      onDragEnd={handleScheduleDragEnd}
+                      isPhone62={isPhone62}
+                    />
+                  ))}
+                </View>
+              )}
+            </NestableScrollContainer>
+          ) : (
+            <FlatList
+              data={filteredTodos}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={styles.listContent}
+              showsVerticalScrollIndicator={false}
+              removeClippedSubviews={false}
+              initialNumToRender={8}
+              maxToRenderPerBatch={8}
+              windowSize={7}
+              ListHeaderComponent={listHeader}
+              ListEmptyComponent={
+                <View style={[styles.emptyState, { backgroundColor: theme.surface }]}> 
+                  <Text style={[styles.emptyTitle, { color: theme.text }]}> 
+                    {filter === 'overdue' ? 'No hay tareas vencidas' : 'Ya terminé todo'}
+                  </Text>
+                  <Text style={[styles.emptyText, { color: theme.mutedText }]}> 
+                    {filter === 'overdue'
+                      ? 'Las tareas con fecha y hora vencidas aparecerán aquí.'
+                      : 'Agrega una nueva tarea para seguir organizando su día.'}
+                  </Text>
+                </View>
+              }
+              renderItem={({ item }) => (
+                <TodoItem item={item} theme={theme} onToggle={toggleTodo} onDelete={deleteTodo} onEdit={openEditTodo} isPhone62={isPhone62} />
+              )}
+            />
+          )}
         </Animated.View>
 
         {showMapPicker ? (
@@ -2315,9 +3501,11 @@ function TodoApp() {
 
 export default function App() {
   return (
-    <AppErrorBoundary>
-      <TodoApp />
-    </AppErrorBoundary>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <AppErrorBoundary>
+        <TodoApp />
+      </AppErrorBoundary>
+    </GestureHandlerRootView>
   );
 }
 
@@ -2777,6 +3965,75 @@ const styles = StyleSheet.create({
   descriptionSection: {
     gap: 8,
   },
+  weekComposerSection: {
+    gap: 8,
+  },
+  weekOptionRow: {
+    marginBottom: 0,
+    paddingBottom: 0,
+  },
+  weekComposerHint: {
+    fontSize: 13,
+  },
+  weekColorSelector: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  weekColorDot: {
+    width: 28,
+    height: 28,
+    borderRadius: 999,
+    borderWidth: 2,
+  },
+  weekColorDotSelected: {
+    transform: [{ scale: 1.08 }],
+  },
+  weekCategoryManagerList: {
+    gap: 8,
+  },
+  weekCategoryManagerRow: {
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  weekCategoryManagerInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  weekCategoryManagerColor: {
+    width: 16,
+    height: 16,
+    borderRadius: 999,
+  },
+  weekCategoryManagerText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  weekCategoryManagerActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  weekTinyButton: {
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  weekTinyButtonText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  weekCancelEditText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
   descriptionInput: {
     borderRadius: 14,
     paddingHorizontal: 14,
@@ -2907,6 +4164,38 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     gap: 8,
   },
+  weekViewToggleRow: {
+    marginTop: 12,
+    flexDirection: 'row',
+    gap: 10,
+  },
+  weekViewToggleRowCompact: {
+    width: '100%',
+  },
+  weekViewToggleButton: {
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  weekViewToggleButtonText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  weekFilterScroll: {
+    paddingTop: 10,
+    gap: 8,
+  },
+  weekFilterChip: {
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  weekFilterChipText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
   summaryText: {
     color: '#0f172a',
     fontSize: 15,
@@ -2926,6 +4215,14 @@ const styles = StyleSheet.create({
   },
   filterSectionCompact: {
     gap: 10,
+  },
+  filterTabBar: {
+    borderWidth: 1,
+    borderRadius: 22,
+    padding: 6,
+  },
+  filterTabBarContent: {
+    gap: 6,
   },
   filterRow: {
     flexDirection: 'row',
@@ -2982,16 +4279,20 @@ const styles = StyleSheet.create({
     height: 46,
   },
   filterButton: {
+    minHeight: 44,
+    minWidth: 108,
     paddingVertical: 10,
-    paddingHorizontal: 14,
+    paddingHorizontal: 18,
     borderRadius: 999,
     backgroundColor: '#cbd5e1',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   filterButtonPhone62: {
-    minHeight: 46,
-    width: '100%',
-    minWidth: 0,
-    paddingVertical: 12,
+    minHeight: 42,
+    width: 'auto',
+    minWidth: 104,
+    paddingVertical: 10,
     paddingHorizontal: 16,
     justifyContent: 'center',
     alignItems: 'center',
@@ -3001,6 +4302,11 @@ const styles = StyleSheet.create({
   },
   filterButtonActive: {
     backgroundColor: '#0f172a',
+    shadowColor: '#0f172a',
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
   },
   filterButtonText: {
     color: '#334155',
@@ -3015,10 +4321,105 @@ const styles = StyleSheet.create({
   filterButtonTextActive: {
     color: '#ffffff',
   },
+  weekDaySelector: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  weekDayChip: {
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  weekDayChipText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  weekCategoryList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  weekCategoryChip: {
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  weekCategoryChipPhone62: {
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+  },
+  weekCategoryChipText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
   listContent: {
     paddingTop: 10,
     paddingBottom: 24,
     gap: 12,
+  },
+  weekDaysList: {
+    gap: 12,
+  },
+  weekCalendarGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  weekCalendarCard: {
+    width: '47%',
+    minHeight: 132,
+    borderRadius: 18,
+    padding: 14,
+    gap: 10,
+    shadowColor: '#0f172a',
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
+  },
+  weekCalendarCardPhone62: {
+    width: '100%',
+    minHeight: 120,
+  },
+  weekCalendarHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+  },
+  weekCalendarTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  weekCalendarCount: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  weekCalendarEntries: {
+    gap: 8,
+  },
+  weekCalendarEntry: {
+    borderLeftWidth: 4,
+    paddingLeft: 8,
+    gap: 2,
+  },
+  weekCalendarEntryTime: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  weekCalendarEntryTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  weekCalendarMoreText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  weekCalendarEmptyText: {
+    fontSize: 13,
   },
   emptyState: {
     backgroundColor: '#ffffff',
@@ -3174,5 +4575,121 @@ const styles = StyleSheet.create({
   },
   deleteButtonTextPhone62: {
     fontSize: 13,
+  },
+  weekDayCard: {
+    borderRadius: 20,
+    padding: 16,
+    gap: 12,
+    shadowColor: '#0f172a',
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
+  },
+  weekDayCardPhone62: {
+    borderRadius: 18,
+    padding: 14,
+  },
+  weekDayHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 10,
+  },
+  weekDayTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  weekDayTitlePhone62: {
+    fontSize: 16,
+  },
+  weekDayCount: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  weekEntriesList: {
+    gap: 10,
+  },
+  weekEntryRow: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderLeftWidth: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  weekEntryRowPhone62: {
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+  },
+  weekEntryMain: {
+    flex: 1,
+    gap: 4,
+  },
+  weekEntryTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  weekEntryTime: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  weekEntryTimePhone62: {
+    fontSize: 12,
+  },
+  weekEntryTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  weekEntryTitlePhone62: {
+    fontSize: 14,
+  },
+  weekEntryDragHint: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  weekEntryReminder: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  weekCategoryBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  weekCategoryBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  weekEntryActions: {
+    gap: 8,
+    alignItems: 'stretch',
+  },
+  weekEditButton: {
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  weekEditButtonText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  weekDeleteButton: {
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  weekDeleteButtonText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  weekEmptyDayText: {
+    fontSize: 14,
+    lineHeight: 20,
   },
 });
